@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>لوحة تحكم تطبيق المحاسبة</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--text:#1d2733;--sub:#5f6b7a;--line:#dfe5ec;--pri:#1565c0;--ok:#2e7d32;--bad:#c62828;--warn:#e65100}
+@media(prefers-color-scheme:dark){:root{--bg:#10151b;--card:#1a222c;--text:#e8edf2;--sub:#9aa8b8;--line:#2c3744;--pri:#64a8ff;--ok:#66bb6a;--bad:#ef5350;--warn:#ffa726}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--text);font-size:15px}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0;flex:1;color:var(--pri)}
+nav{display:flex;gap:6px;overflow-x:auto;padding:8px 14px;background:var(--card);border-bottom:1px solid var(--line)}
+nav button{white-space:nowrap}
+main{padding:14px;max-width:980px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{margin:0 0 10px;font-size:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat{background:var(--bg);border-radius:10px;padding:10px;text-align:center}.stat b{display:block;font-size:22px;color:var(--pri)}.stat span{color:var(--sub);font-size:12px}
+button,.btn{font:inherit;border:1px solid var(--pri);background:var(--pri);color:#fff;border-radius:9px;padding:8px 14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--pri)}button.bad{background:var(--bad);border-color:var(--bad)}button.sm{padding:4px 10px;font-size:13px}
+button:disabled{opacity:.5}nav button.on{background:var(--pri);color:#fff}nav button:not(.on){background:transparent;color:var(--pri)}
+input,select,textarea{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text)}
+label{display:block;font-size:13px;color:var(--sub);margin:8px 0 3px}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1;min-width:120px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}th{color:var(--sub);font-weight:600}
+tr.click{cursor:pointer}tr.click:hover{background:var(--bg)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.sub{color:var(--sub)}.mono{font-family:ui-monospace,Consolas,monospace;direction:ltr;unicode-bidi:embed}
+.scroll{overflow-x:auto}.msg{padding:10px;border-radius:9px;margin-bottom:10px}.msg.err{background:#fdecea;color:#b71c1c}.msg.good{background:#e8f5e9;color:#1b5e20}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header><h1>لوحة تحكم تطبيق المحاسبة</h1><span id="who" class="sub"></span><button id="logout" class="ghost sm hide">خروج</button></header>
+<nav id="nav" class="hide"></nav>
+<main id="main"></main>
+<script>
+'use strict';
+const PLAN = {0:'مجاني',1:'الأساسي',2:'الاحترافي',3:'الأعمال'};
+const MODE = {active:'فعّال',suspend_free:'موقوف: خفض للمجاني',suspend_lock:'موقوف: قفل كامل'};
+const STATE = {ACTIVE:'مشترك',GRACE:'مهلة',EXPIRED:'منتهٍ',TRIAL:'تجربة',TRIAL_ENDED:'مجاني',SUSPENDED:'موقوف',LOCKED:'مقفل',LEASE_EXPIRED:'يحتاج مزامنة',CLOCK_ERROR:'خطأ ساعة'};
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtDate = (ms) => ms ? new Date(ms).toLocaleString('ar-EG-u-nu-latn', {dateStyle:'medium', timeStyle:'short'}) : '—';
+const ago = (ms) => { if (!ms) return '—'; const d = (Date.now() - ms) / 60000; return d < 60 ? Math.round(d) + ' د' : d < 1440 ? Math.round(d / 60) + ' س' : Math.round(d / 1440) + ' يوم'; };
+let API = localStorage.getItem('api') || '';
+let TOKEN = sessionStorage.getItem('token') || '';
+let view = 'dash', arg = null;
+
+async function api(method, path, body) {
+  const res = await fetch(API.replace(/\/$/, '') + path, { method, headers: { 'content-type': 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && TOKEN) { logout(); throw new Error('انتهت الجلسة، سجّل الدخول من جديد'); }
+  if (!res.ok) throw new Error(data.error || 'خطأ ' + res.status);
+  return data;
+}
+function logout() { TOKEN = ''; sessionStorage.removeItem('token'); show(); }
+function notify(text, good) { const m = document.createElement('div'); m.className = 'msg ' + (good ? 'good' : 'err'); m.textContent = text; $('#main').prepend(m); setTimeout(() => m.remove(), 6000); }
+async function run(fn) { try { await fn(); } catch (e) { notify(e.message); } }
+
+function show() {
+  const logged = !!TOKEN;
+  $('#nav').classList.toggle('hide', !logged); $('#logout').classList.toggle('hide', !logged);
+  if (!logged) return loginView();
+  const tabs = [['dash','الرئيسية'],['devices','الأجهزة'],['customers','العملاء'],['payments','الدفعات'],['audit','السجل'],['settings','الإعدادات']];
+  $('#nav').innerHTML = tabs.map(([k, t]) => `<button data-k="${k}" class="${(view === k || (k === 'devices' && view === 'device') || (k === 'customers' && view === 'customer')) ? 'on' : ''}">${t}</button>`).join('');
+  $('#nav').onclick = (e) => { const k = e.target.dataset.k; if (k) { view = k; arg = null; show(); } };
+  ({ dash: dashView, devices: devicesView, device: deviceView, customers: customersView, customer: customerView, payments: paymentsView, audit: auditView, settings: settingsView })[view]();
+}
+$('#logout').onclick = logout;
+
+function loginView() {
+  $('#main').innerHTML = `<div class="card"><h2>تسجيل الدخول</h2>
+    <label>رابط الخادم (Worker)</label><input id="api" class="mono" value="${esc(API)}" placeholder="https://اسم-الخدمة.اسمك.workers.dev">
+    <label>كلمة المرور</label><input id="pw" type="password" autocomplete="current-password">
+    <label>رمز التحقق (6 أرقام من تطبيق المصادقة)</label><input id="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+    <p><button id="go">دخول</button></p></div>`;
+  $('#go').onclick = () => run(async () => {
+    API = $('#api').value.trim(); if (!/^https:\/\//.test(API)) throw new Error('أدخل رابط الخادم يبدأ بـ https://');
+    localStorage.setItem('api', API);
+    const r = await api('POST', '/admin/login', { password: $('#pw').value, totp: $('#otp').value.trim() });
+    TOKEN = r.token; sessionStorage.setItem('token', TOKEN); view = 'dash'; show();
+  });
+}
+
+async function dashView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const s = await api('GET', '/admin/stats');
+    const money = (rows) => rows.length ? rows.map((r) => `${esc(r.total)} ${esc(r.currency)}`).join(' + ') : '0';
+    const dev = (d) => `<tr class="click" data-tag="${esc(d.tag)}"><td class="mono">${esc(d.device_code)}</td><td>${esc(PLAN[d.last_plan] || '—')}</td><td>${esc(d.last_days)} يوم</td><td>${ago(d.last_seen)}</td></tr>`;
+    $('#main').innerHTML = `<div class="card"><div class="grid">
+      <div class="stat"><b>${s.total}</b><span>أجهزة مسجّلة</span></div>
+      <div class="stat"><b>${s.active7}</b><span>نشطة آخر 7 أيام</span></div>
+      <div class="stat"><b>${(s.byState.find((x) => x.s === 'ACTIVE') || {n: 0}).n}</b><span>مشتركون فعّالون</span></div>
+      <div class="stat"><b>${s.expiring.length}</b><span>ينتهون خلال 7 أيام</span></div></div></div>
+      <div class="card"><h2>الإيراد</h2><p>هذا الشهر: <b>${money(s.revenue)}</b><br>الإجمالي: <b>${money(s.revenueAll)}</b></p></div>
+      <div class="card"><h2>ينتهي اشتراكهم قريباً (≤ 7 أيام)</h2><div class="scroll"><table><tr><th>الجهاز</th><th>الباقة</th><th>المتبقي</th><th>آخر ظهور</th></tr>${s.expiring.map(dev).join('') || '<tr><td colspan="4" class="sub">لا أحد</td></tr>'}</table></div></div>
+      <div class="card"><h2 class="${s.suspects.length ? 'warn' : ''}">اشتباه بتلاعب بالتاريخ (فرق الساعة > يومين)</h2><div class="scroll"><table><tr><th>الجهاز</th><th>الباقة</th><th>الفرق</th><th>آخر ظهور</th></tr>${s.suspects.map((d) => `<tr class="click" data-tag="${esc(d.tag)}"><td class="mono">${esc(d.device_code)}</td><td>${esc(PLAN[d.last_plan] || '—')}</td><td>${Math.round(d.clock_skew_ms / 86400000)} يوم</td><td>${ago(d.last_seen)}</td></tr>`).join('') || '<tr><td colspan="4" class="sub">لا شيء</td></tr>'}</table></div></div>`;
+    $('#main').onclick = (e) => { const tr = e.target.closest('tr[data-tag]'); if (tr) { view = 'device'; arg = tr.dataset.tag; show(); } };
+  });
+}
+
+async function devicesView() {
+  $('#main').innerHTML = `<div class="card"><div class="row"><input id="q" placeholder="بحث: رمز الجهاز أو اسم أو هاتف أو ملاحظة"><button id="s" style="flex:0">بحث</button></div></div>
+    <div class="card"><h2>إضافة جهاز برمزه (قبل أن يتصل)</h2><div class="row"><input id="code" class="mono" placeholder="XXXXX-XXXXX-XXX"><button id="add" style="flex:0">إضافة</button></div></div>
+    <div class="card"><div class="scroll" id="list">جارٍ التحميل…</div></div>`;
+  const load = () => run(async () => {
+    const r = await api('GET', '/admin/devices?q=' + encodeURIComponent($('#q').value));
+    $('#list').innerHTML = `<table><tr><th>العميل</th><th>الرمز</th><th>الحالة</th><th>العمليات</th><th>آخر ظهور</th><th>الإصدار</th></tr>${r.devices.map((d) => `<tr class="click" data-tag="${esc(d.tag)}">
+      <td>${esc(d.customer_name || '—')}</td><td class="mono">${esc(d.device_code)}</td>
+      <td>${esc(PLAN[d.last_plan] || '')} ${esc(STATE[d.last_state] || d.last_state || '')}${d.mode !== 'active' ? ` <span class="tag bad">${esc(MODE[d.mode])}</span>` : ''}</td>
+      <td>${d.last_limit < 0 ? esc(d.last_used) + ' / ∞' : esc(d.last_used) + ' / ' + esc(d.last_limit)}</td><td>${ago(d.last_seen)}</td><td>${esc(d.app_version)}</td></tr>`).join('') || '<tr><td colspan="6" class="sub">لا نتائج</td></tr>'}</table>`;
+  });
+  $('#s').onclick = load; $('#q').onkeydown = (e) => e.key === 'Enter' && load();
+  $('#add').onclick = () => run(async () => { const r = await api('POST', '/admin/device', { code: $('#code').value }); view = 'device'; arg = r.tag; show(); });
+  $('#list').onclick = (e) => { const tr = e.target.closest('tr[data-tag]'); if (tr) { view = 'device'; arg = tr.dataset.tag; show(); } };
+  load();
+}
+
+async function deviceView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const [{ device: d, grants, payments, customer }, { customers }] = await Promise.all([api('GET', '/admin/device/' + arg), api('GET', '/admin/customers')]);
+    const g = (x) => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(PLAN[x.plan])}</td><td>${x.days ? esc(x.days) + ' يوم' : 'دائم'}</td><td>${x.ops === 0 ? 'افتراضي' : x.ops === 65535 ? '∞' : esc(x.ops)}</td><td>${fmtDate(x.created_at)}</td><td>${esc(x.note)}</td>
+      <td>${x.revoked ? '<span class="tag bad">ملغى</span>' : `<button class="sm bad" data-rev="${esc(x.id)}">إلغاء</button>`}</td></tr>`;
+    $('#main').innerHTML = `
+    <div class="card"><h2>الجهاز <span class="mono">${esc(d.device_code)}</span> ${d.mode !== 'active' ? `<span class="tag bad">${esc(MODE[d.mode])}</span>` : ''}</h2>
+      <p class="sub">الوسم: <span class="mono">${esc(d.tag)}</span><br>الإصدار: ${esc(d.app_version || '—')} · آخر ظهور: ${fmtDate(d.last_seen)} (${ago(d.last_seen)})<br>
+      الحالة المُبلَّغة: ${esc(PLAN[d.last_plan] || '—')} / ${esc(STATE[d.last_state] || d.last_state || '—')} · العمليات: ${esc(d.last_used)} من ${d.last_limit < 0 ? '∞' : esc(d.last_limit)} · المتبقي: ${esc(d.last_days)} يوم<br>
+      فرق الساعة عن الخادم: <span class="${Math.abs(d.clock_skew_ms || 0) > 172800000 ? 'bad' : ''}">${d.clock_skew_ms == null ? '—' : Math.round(d.clock_skew_ms / 60000) + ' دقيقة'}</span></p>
+      <p class="sub">البيانات المبلَّغة معلوماتية ولا تُغيّر صلاحية الجهاز؛ ما تغيّره هنا يصل الجهاز عند أول اتصال له بالإنترنت.</p></div>
+
+    <div class="card"><h2>العميل</h2><div class="row"><select id="cust"><option value="">— بلا عميل —</option>${customers.map((c) => `<option value="${c.id}" ${c.id === d.customer_id ? 'selected' : ''}>${esc(c.name)} ${esc(c.phone)}</option>`).join('')}</select><button id="savecust" style="flex:0">ربط</button></div>
+      <div class="row"><input id="nc" placeholder="أو أنشئ عميلاً: الاسم"><input id="np" placeholder="الهاتف"><button id="newcust" class="ghost" style="flex:0">إنشاء وربط</button></div></div>
+
+    <div class="card"><h2>إضافة اشتراك (يُفعَّل تلقائياً عند اتصال الجهاز)</h2>
+      <div class="row"><div><label>الباقة</label><select id="gp"><option value="1">الأساسي</option><option value="2" selected>الاحترافي</option><option value="3">الأعمال</option></select></div>
+      <div><label>الأيام (0 = دائم)</label><input id="gd" type="number" min="0" max="65535" value="30"></div>
+      <div><label>العمليات</label><select id="gom"><option value="0">افتراضي (حد الباقة × الأيام ÷ 30)</option><option value="65535">بلا حدود</option><option value="c">عدد مخصص يُضاف كاملاً</option></select></div>
+      <div id="gcw" class="hide"><label>العدد</label><input id="gc" type="number" min="1" max="65534" value="1000"></div></div>
+      <div class="row"><button class="ghost sm" data-d="30">30</button><button class="ghost sm" data-d="90">90</button><button class="ghost sm" data-d="180">180</button><button class="ghost sm" data-d="365">365</button></div>
+      <label>ملاحظة</label><input id="gn">
+      <div class="row"><div><label>الدفعة (اختياري)</label><input id="pa" type="number" step="any" placeholder="المبلغ"></div><div><label>العملة</label><select id="pc"><option>USD</option><option>YER</option><option>SAR</option></select></div><div><label>الطريقة</label><input id="pm" placeholder="تحويل / نقداً"></div></div>
+      <p><button id="addgrant">إضافة الاشتراك</button></p></div>
+
+    <div class="card"><h2>الاشتراكات</h2><div class="scroll"><table><tr><th>المعرّف</th><th>الباقة</th><th>الأيام</th><th>العمليات</th><th>التاريخ</th><th>ملاحظة</th><th></th></tr>${grants.map(g).join('') || '<tr><td colspan="7" class="sub">لا اشتراكات</td></tr>'}</table></div>
+      <p class="sub">إلغاء اشتراك يسحبه من الجهاز عند اتصاله (يُعاد حساب الأيام والعمليات بدونه).</p></div>
+
+    <div class="card"><h2>التحكم</h2>
+      <label>الحالة</label><select id="mode">${Object.entries(MODE).map(([k, v]) => `<option value="${k}" ${k === d.mode ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <label>رسالة تظهر للعميل عند الإيقاف</label><textarea id="msg" rows="2">${esc(d.message)}</textarea>
+      <div class="row"><div><label>تعديل رصيد العمليات (+/−) يُضاف للرصيد</label><input id="adj" type="number" value="${esc(d.ops_adjust)}"></div>
+      <div><label>مهلة المزامنة بالأيام (0 = بلا اشتراط)</label><input id="lease" type="number" min="0" value="${esc(d.lease_days)}"></div></div>
+      <label>ملاحظات</label><textarea id="notes" rows="2">${esc(d.notes)}</textarea>
+      <p><button id="savectl">حفظ</button></p>
+      <p class="sub">«خفض للمجاني» يُبقي بيانات العميل ويحدّ الميزات. «قفل كامل» يمنع استعمال التطبيق ويعرض الرسالة. كلاهما يُنفَّذ عند اتصال الجهاز بالإنترنت.</p></div>
+
+    <div class="card"><h2>الدفعات</h2><div class="scroll"><table><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>ملاحظة</th></tr>${payments.map((p) => `<tr><td>${fmtDate(p.at)}</td><td>${esc(p.amount)} ${esc(p.currency)}</td><td>${esc(p.method)}</td><td>${esc(p.note)}</td></tr>`).join('') || '<tr><td colspan="4" class="sub">لا دفعات</td></tr>'}</table></div></div>`;
+    $('#main').onclick = (e) => {
+      const rv = e.target.dataset.rev, dd = e.target.dataset.d;
+      if (dd !== undefined) { $('#gd').value = dd; return; }
+      if (rv && confirm('إلغاء هذا الاشتراك؟')) run(async () => { await api('POST', '/admin/grant/' + rv + '/revoke'); notify('أُلغي', true); deviceView(); });
+    };
+    $('#gom').onchange = () => $('#gcw').classList.toggle('hide', $('#gom').value !== 'c');
+    $('#savecust').onclick = () => run(async () => { await api('POST', '/admin/device/' + arg, { customer_id: $('#cust').value || null }); notify('تم الربط', true); deviceView(); });
+    $('#newcust').onclick = () => run(async () => { const c = await api('POST', '/admin/customer', { name: $('#nc').value, phone: $('#np').value }); await api('POST', '/admin/device/' + arg, { customer_id: c.id }); deviceView(); });
+    $('#addgrant').onclick = () => run(async () => {
+      const om = $('#gom').value; const pay = Number($('#pa').value);
+      await api('POST', '/admin/device/' + arg + '/grant', { plan: +$('#gp').value, days: +$('#gd').value, ops: om === 'c' ? +$('#gc').value : +om, note: $('#gn').value, payment: pay > 0 ? { amount: pay, currency: $('#pc').value, method: $('#pm').value } : undefined });
+      notify('أُضيف الاشتراك وسيصل الجهاز عند اتصاله', true); deviceView();
+    });
+    $('#savectl').onclick = () => run(async () => {
+      if ($('#mode').value === 'suspend_lock' && !confirm('قفل كامل: سيُمنع العميل من استعمال التطبيق عند اتصاله. متابعة؟')) return;
+      await api('POST', '/admin/device/' + arg, { mode: $('#mode').value, message: $('#msg').value, ops_adjust: +$('#adj').value, lease_days: +$('#lease').value, notes: $('#notes').value });
+      notify('حُفظ', true); deviceView();
+    });
+  });
+}
+
+async function customersView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const { customers } = await api('GET', '/admin/customers');
+    $('#main').innerHTML = `<div class="card"><h2>عميل جديد</h2><div class="row"><input id="n" placeholder="الاسم"><input id="p" placeholder="الهاتف"><input id="t" placeholder="ملاحظات"><button id="add" style="flex:0">إضافة</button></div></div>
+      <div class="card"><div class="scroll"><table><tr><th>الاسم</th><th>الهاتف</th><th>الأجهزة</th><th>المدفوع</th></tr>${customers.map((c) => `<tr class="click" data-id="${c.id}"><td>${esc(c.name)}</td><td class="mono">${esc(c.phone)}</td><td>${c.devices}</td><td>${esc(c.paid)}</td></tr>`).join('') || '<tr><td colspan="4" class="sub">لا عملاء</td></tr>'}</table></div></div>`;
+    $('#add').onclick = () => run(async () => { await api('POST', '/admin/customer', { name: $('#n').value, phone: $('#p').value, notes: $('#t').value }); customersView(); });
+    $('#main').onclick = (e) => { const tr = e.target.closest('tr[data-id]'); if (tr) { view = 'customer'; arg = tr.dataset.id; show(); } };
+  });
+}
+async function customerView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const { customer: c, devices, payments } = await api('GET', '/admin/customer/' + arg);
+    $('#main').innerHTML = `<div class="card"><h2>العميل</h2><label>الاسم</label><input id="n" value="${esc(c.name)}"><label>الهاتف</label><input id="p" value="${esc(c.phone)}"><label>ملاحظات</label><textarea id="t" rows="3">${esc(c.notes)}</textarea><p><button id="save">حفظ</button></p></div>
+      <div class="card"><h2>أجهزته</h2><div class="scroll"><table>${devices.map((d) => `<tr class="click" data-tag="${esc(d.tag)}"><td class="mono">${esc(d.device_code)}</td><td>${esc(PLAN[d.last_plan] || '—')}</td><td>${ago(d.last_seen)}</td></tr>`).join('') || '<tr><td class="sub">لا أجهزة</td></tr>'}</table></div></div>
+      <div class="card"><h2>دفعة جديدة</h2><div class="row"><input id="pa" type="number" step="any" placeholder="المبلغ"><select id="pc"><option>USD</option><option>YER</option><option>SAR</option></select><input id="pm" placeholder="الطريقة"><input id="pn" placeholder="ملاحظة"><button id="addp" style="flex:0">تسجيل</button></div>
+      <div class="scroll"><table><tr><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>ملاحظة</th></tr>${payments.map((p) => `<tr><td>${fmtDate(p.at)}</td><td>${esc(p.amount)} ${esc(p.currency)}</td><td>${esc(p.method)}</td><td>${esc(p.note)}</td></tr>`).join('')}</table></div></div>`;
+    $('#save').onclick = () => run(async () => { await api('POST', '/admin/customer/' + arg, { name: $('#n').value, phone: $('#p').value, notes: $('#t').value }); notify('حُفظ', true); });
+    $('#addp').onclick = () => run(async () => { await api('POST', '/admin/payment', { customer_id: +arg, amount: +$('#pa').value, currency: $('#pc').value, method: $('#pm').value, note: $('#pn').value }); customerView(); });
+    $('#main').onclick = (e) => { const tr = e.target.closest('tr[data-tag]'); if (tr) { view = 'device'; arg = tr.dataset.tag; show(); } };
+  });
+}
+async function paymentsView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const { payments } = await api('GET', '/admin/payments');
+    $('#main').innerHTML = `<div class="card"><h2>الدفعات</h2><div class="scroll"><table><tr><th>التاريخ</th><th>العميل</th><th>المبلغ</th><th>الطريقة</th><th>ملاحظة</th></tr>${payments.map((p) => `<tr><td>${fmtDate(p.at)}</td><td>${esc(p.customer_name || '—')}</td><td>${esc(p.amount)} ${esc(p.currency)}</td><td>${esc(p.method)}</td><td>${esc(p.note)}</td></tr>`).join('') || '<tr><td colspan="5" class="sub">لا دفعات</td></tr>'}</table></div></div>`;
+  });
+}
+async function auditView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const { audit } = await api('GET', '/admin/audit');
+    $('#main').innerHTML = `<div class="card"><h2>سجل التدقيق (آخر 300)</h2><div class="scroll"><table><tr><th>الوقت</th><th>الإجراء</th><th>الهدف</th><th>تفاصيل</th><th>العنوان</th></tr>${audit.map((a) => `<tr><td>${fmtDate(a.at)}</td><td>${esc(a.action)}</td><td class="mono">${esc(a.target)}</td><td class="mono">${esc(a.details)}</td><td class="mono">${esc(a.ip)}</td></tr>`).join('')}</table></div></div>`;
+  });
+}
+async function settingsView() {
+  $('#main').innerHTML = '<div class="card">جارٍ التحميل…</div>';
+  await run(async () => {
+    const s = await api('GET', '/admin/settings');
+    $('#main').innerHTML = `<div class="card"><h2>الإعدادات</h2><label>مهلة المزامنة الافتراضية للأجهزة الجديدة (أيام، 0 = بلا اشتراط)</label><input id="lease" type="number" min="0" value="${esc(s.default_lease_days)}"><p><button id="save">حفظ</button></p></div>
+      <div class="card"><h2>نسخة احتياطية</h2><p class="sub">تنزيل كل البيانات (عملاء، أجهزة، اشتراكات، دفعات، سجل) ملف JSON. احتفظ به في مكان آمن لأنه يحوي بيانات عملائك.</p><button id="exp">تنزيل نسخة احتياطية</button></div>`;
+    $('#save').onclick = () => run(async () => { await api('POST', '/admin/settings', { default_lease_days: +$('#lease').value }); notify('حُفظ', true); });
+    $('#exp').onclick = () => run(async () => {
+      const data = await api('GET', '/admin/export');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      a.download = 'accounting-backup-' + new Date().toISOString().slice(0, 10) + '.json'; a.click();
+    });
+  });
+}
+show();
+</script>
+</body>
+</html>
