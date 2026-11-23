@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>تهيئة خادم الترخيص (تُشغَّل في متصفحك فقط)</title>
+<style>
+body{font-family:system-ui,Tahoma,sans-serif;margin:0;background:#f4f6f9;color:#1d2733;padding:14px;max-width:760px;margin:auto}
+.card{background:#fff;border:1px solid #dfe5ec;border-radius:12px;padding:14px;margin-bottom:12px}
+h1{font-size:19px;color:#1565c0}h2{font-size:16px;margin:0 0 8px}
+textarea,input{width:100%;font:inherit;padding:8px;border:1px solid #dfe5ec;border-radius:9px;direction:ltr}
+button{font:inherit;background:#1565c0;color:#fff;border:0;border-radius:9px;padding:8px 14px;margin-top:6px}
+.warn{background:#fff3e0;border:1px solid #ffb74d;border-radius:10px;padding:10px;font-size:14px}
+code{background:#eef2f6;padding:1px 5px;border-radius:5px;direction:ltr;unicode-bidi:embed}
+</style>
+</head>
+<body>
+<h1>تهيئة خادم الترخيص</h1>
+<div class="warn">كل ما تولّده هنا يُحسب داخل متصفحك فقط ولا يُرسل لأي جهة. انسخ كل قيمة إلى مكانها في Cloudflare ثم أغلق الصفحة. <b>لا تشارك المفتاح الخاص ولا كلمة المرور ولا مفتاح رمز التحقق مع أحد.</b> يمكنك حذف هذه الصفحة من المستودع بعد الانتهاء.</div>
+
+<div class="card"><h2>1) مفتاح التوقيع</h2>
+<button id="k">توليد زوج مفاتيح جديد</button>
+<p>انسخ هذا إلى سر Cloudflare باسم <code>SIGNING_KEY_JWK</code> (خاص):</p><textarea id="jwk" rows="5" readonly></textarea>
+<p>وانسخ هذا إلى <code>SERVER_PUBLIC_KEYS_HEX</code> في ملف <code>LicenseConfig.java</code> بالتطبيق (عام):</p><textarea id="pub" rows="3" readonly></textarea></div>
+
+<div class="card"><h2>2) كلمة مرور اللوحة</h2>
+<input id="pw" type="password" placeholder="اختر كلمة مرور طويلة (12 حرفاً فأكثر)">
+<button id="p">توليد البصمة</button>
+<p>انسخ إلى سر باسم <code>ADMIN_PASS_HASH</code>:</p><textarea id="hash" rows="3" readonly></textarea></div>
+
+<div class="card"><h2>3) رمز التحقق (TOTP)</h2>
+<button id="t">توليد مفتاح جديد</button>
+<p>انسخ إلى سر باسم <code>TOTP_SECRET</code> وأضفه أيضاً في تطبيق المصادقة (Google Authenticator أو غيره) عبر «إدخال مفتاح الإعداد» نوع «حسب الوقت»:</p><textarea id="totp" rows="2" readonly></textarea>
+<p>للتأكد: الرمز الحالي من هذا المفتاح: <b id="now"></b></p></div>
+
+<div class="card"><h2>4) سر الجلسات</h2>
+<button id="s">توليد</button>
+<p>انسخ إلى سر باسم <code>SESSION_SECRET</code>:</p><textarea id="sess" rows="2" readonly></textarea></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const b64 = (u) => btoa(String.fromCharCode(...u));
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const b32 = (u) => { let bits = 0, buf = 0, out = ''; for (const b of u) { buf = (buf << 8) | b; bits += 8; while (bits >= 5) { out += B32[(buf >> (bits - 5)) & 31]; bits -= 5; buf &= (1 << bits) - 1; } } if (bits) out += B32[(buf << (5 - bits)) & 31]; return out; };
+const unb32 = (t) => { let bits = 0, buf = 0; const o = []; for (const c of t) { buf = (buf << 5) | B32.indexOf(c); bits += 5; if (bits >= 8) { o.push((buf >> (bits - 8)) & 255); bits -= 8; buf &= (1 << bits) - 1; } } return new Uint8Array(o); };
+$('#k').onclick = async () => {
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  $('#jwk').value = JSON.stringify(await crypto.subtle.exportKey('jwk', kp.privateKey));
+  $('#pub').value = [...new Uint8Array(await crypto.subtle.exportKey('spki', kp.publicKey))].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+$('#p').onclick = async () => {
+  const pw = $('#pw').value; if (pw.length < 12) return alert('كلمة المرور أقصر من 12 حرفاً');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256));
+  $('#hash').value = `pbkdf2$100000$${b64(salt)}$${b64(bits)}`;
+};
+let secret = null, timer = null;
+async function code(step) {
+  const msg = new Uint8Array(8); let s = step; for (let i = 7; i >= 0; i--) { msg[i] = s & 255; s = Math.floor(s / 256); }
+  const k = await crypto.subtle.importKey('raw', unb32(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const h = new Uint8Array(await crypto.subtle.sign('HMAC', k, msg)); const o = h[19] & 15;
+  return String((((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1000000).padStart(6, '0');
+}
+$('#t').onclick = () => {
+  secret = b32(crypto.getRandomValues(new Uint8Array(20))); $('#totp').value = secret;
+  clearInterval(timer); const tick = async () => { $('#now').textContent = await code(Math.floor(Date.now() / 30000)); }; tick(); timer = setInterval(tick, 1000);
+};
+$('#s').onclick = () => { $('#sess').value = b64(crypto.getRandomValues(new Uint8Array(32))); };
+</script>
+</body>
+</html>
